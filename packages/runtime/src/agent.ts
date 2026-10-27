@@ -651,6 +651,13 @@ interface PackagedSkillFileMatch {
 	readonly filePath: string;
 }
 
+/** Skill-root path from an Agent Skills file reference, or `undefined` when empty. */
+function skillRootRelativePath(path: string): string | undefined {
+	let relative = path.replace(/^\/+/, '');
+	if (relative.startsWith('./')) relative = relative.slice(2);
+	return relative.length > 0 ? relative : undefined;
+}
+
 function findPackagedSkillFile(
 	skills: Record<string, PackagedSkillDirectory>,
 	path: string,
@@ -672,18 +679,15 @@ function findPackagedSkillFile(
 		}
 	}
 	if (!allowRelative) return undefined;
-	// Skill authors link resources relative to the skill directory (Agent
-	// Skills spec), and models copy those links instead of the advertised
-	// path. Accept a relative path — or a unique suffix of a packaged path —
-	// but only when exactly one file matches, so the call stays unambiguous.
-	const relative = path.replace(/^\/+/, '');
-	if (relative.length === 0) return undefined;
+	// Skill authors link resources as paths from the skill root (Agent Skills
+	// spec), and models copy those links instead of the advertised path.
+	// Accept that path only, and only when exactly one file matches.
+	const relative = skillRootRelativePath(path);
+	if (relative === undefined) return undefined;
 	const matches: PackagedSkillFileMatch[] = [];
 	for (const skill of Object.values(skills)) {
 		for (const filePath of Object.keys(skill.files)) {
-			if (filePath === relative || filePath.endsWith(`/${relative}`)) {
-				matches.push({ skill, filePath });
-			}
+			if (filePath === relative) matches.push({ skill, filePath });
 		}
 	}
 	return matches.length === 1 ? matches[0] : undefined;
@@ -696,6 +700,13 @@ export function listPackagedSkillResources(directory: PackagedSkillDirectory): s
 		.sort();
 }
 
+/** `skill:<name>:<hash>` → `<name>`. */
+function packagedSkillIdName(skillId: string): string | undefined {
+	const start = skillId.indexOf('skill:') + 'skill:'.length;
+	const end = skillId.lastIndexOf(':');
+	return start < 'skill:'.length || end <= start ? undefined : skillId.slice(start, end);
+}
+
 function describePackagedSkillResourcePaths(
 	skills: Record<string, PackagedSkillDirectory>,
 	path: string,
@@ -703,26 +714,30 @@ function describePackagedSkillResourcePaths(
 	const segment = path.startsWith(PACKAGED_SKILLS_ROOT)
 		? (path.slice(PACKAGED_SKILLS_ROOT.length).split('/', 1)[0] ?? '')
 		: '';
-	const skillId = decodeSkillSegment(segment);
+	let skillId = segment;
+	try {
+		skillId = decodeURIComponent(segment);
+	} catch {
+		// A malformed percent-escape is not a skill id; keep the raw segment.
+	}
 	const name = packagedSkillIdName(skillId);
-	const paths =
-		name === undefined
-			? []
-			: Object.values(skills)
-					.filter((skill) => packagedSkillIdName(skill.id) === name)
-					.flatMap((skill) =>
-						listPackagedSkillResources(skill).map((filePath) =>
-							formatPackagedSkillFilePath(skill.id, filePath),
-						),
-					);
+	const paths: string[] = [];
+	if (name !== undefined) {
+		for (const skill of Object.values(skills)) {
+			if (packagedSkillIdName(skill.id) !== name) continue;
+			for (const filePath of listPackagedSkillResources(skill)) {
+				paths.push(formatPackagedSkillFilePath(skill.id, filePath));
+			}
+		}
+	}
 	if (paths.length > 0) return `. Resource paths of skill "${name}": ${paths.join(', ')}`;
-	// A relative path with several candidates: name every file it could mean.
-	const relative = path.replace(/^\/+/, '');
+	// A skill-root path in several skills: name every file it could mean.
+	const relative = skillRootRelativePath(path);
 	const candidates = new Set<string>();
-	if (relative.length > 0) {
+	if (relative !== undefined) {
 		for (const skill of Object.values(skills)) {
 			for (const filePath of listPackagedSkillResources(skill)) {
-				if (filePath === relative || filePath.endsWith(`/${relative}`)) {
+				if (filePath === relative) {
 					candidates.add(formatPackagedSkillFilePath(skill.id, filePath));
 				}
 			}
@@ -731,21 +746,6 @@ function describePackagedSkillResourcePaths(
 	return candidates.size > 0
 		? `. Resource paths matching "${path}": ${[...candidates].join(', ')}`
 		: ". Use a path from the skill's resource list.";
-}
-
-function decodeSkillSegment(segment: string): string {
-	try {
-		return decodeURIComponent(segment);
-	} catch {
-		return segment;
-	}
-}
-
-/** `skill:<name>:<hash>` → `<name>`. */
-function packagedSkillIdName(skillId: string): string | undefined {
-	const start = skillId.indexOf('skill:') + 'skill:'.length;
-	const end = skillId.lastIndexOf(':');
-	return start < 'skill:'.length || end <= start ? undefined : skillId.slice(start, end);
 }
 
 function wrapBase64ForReading(content: string): string {
