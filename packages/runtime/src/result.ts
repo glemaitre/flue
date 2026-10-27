@@ -1,6 +1,10 @@
 import type { AgentTool } from '@earendil-works/pi-agent-core';
 import type * as v from 'valibot';
-import { formatPackagedSkillFilePath, READ_SKILL_RESOURCE_TOOL_NAME } from './agent.ts';
+import {
+	formatPackagedSkillFilePath,
+	listPackagedSkillResources,
+	READ_SKILL_RESOURCE_TOOL_NAME,
+} from './agent.ts';
 import { decodeBase64 } from './base64.ts';
 import { isTopLevelObjectSchema, parseValibot, valibotToJsonSchema } from './schema.ts';
 import { parseSkillMarkdown } from './skill-frontmatter.ts';
@@ -50,9 +54,7 @@ export function buildPackagedSkillPrompt(
 		skill.body,
 		'</skill_instructions>',
 	];
-	const resources = Object.keys(directory.files)
-		.filter((filePath) => filePath !== 'SKILL.md')
-		.sort();
+	const resources = listPackagedSkillResources(directory);
 	if (resources.length > 0) {
 		parts.push(
 			'',

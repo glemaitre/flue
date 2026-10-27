@@ -88,9 +88,11 @@ export function createPackagedSkillReadTool(
 			const path = params.path.startsWith(PACKAGED_SKILLS_ROOT.slice(1))
 				? `/${params.path}`
 				: params.path;
-			const content = readPackagedSkillFile(packagedSkills, path);
+			const content = readPackagedSkillFile(packagedSkills, path, true);
 			if (content === undefined)
-				throw new Error(`[flue] Packaged skill file not found: ${params.path}`);
+				throw new Error(
+					`[flue] Packaged skill file not found: ${params.path}${describePackagedSkillResourcePaths(packagedSkills, path)}`,
+				);
 			return formatReadContent(path, content, params.offset, params.limit);
 		},
 	};
@@ -633,26 +635,117 @@ function throwIfAborted(signal?: AbortSignal): void {
 function readPackagedSkillFile(
 	skills: Record<string, PackagedSkillDirectory>,
 	path: string,
+	allowRelative = false,
 ): string | undefined {
+	const match = findPackagedSkillFile(skills, path, allowRelative);
+	if (match === undefined) return undefined;
+	const file = match.skill.files[match.filePath];
+	if (file === undefined) return undefined;
+	return file.kind === 'binary'
+		? wrapBase64ForReading(file.content)
+		: new TextDecoder().decode(decodeBase64(file.content));
+}
+
+interface PackagedSkillFileMatch {
+	readonly skill: PackagedSkillDirectory;
+	readonly filePath: string;
+}
+
+function findPackagedSkillFile(
+	skills: Record<string, PackagedSkillDirectory>,
+	path: string,
+	allowRelative: boolean,
+): PackagedSkillFileMatch | undefined {
 	for (const skill of Object.values(skills)) {
-		for (const [filePath, file] of Object.entries(skill.files)) {
+		for (const filePath of Object.keys(skill.files)) {
 			// The advertised path percent-encodes the skill id, but models echo
 			// it back decoded — framework ids are `skill:<name>:<hash>`, whose
 			// `:` encodes to `%3A` — so accept both spellings. The encoded form
 			// is checked first; it stays unambiguous even for ids containing
 			// path separators.
 			if (
-				path !== formatPackagedSkillFilePath(skill.id, filePath) &&
-				path !== `${PACKAGED_SKILLS_ROOT}${skill.id}/${filePath}`
+				path === formatPackagedSkillFilePath(skill.id, filePath) ||
+				path === `${PACKAGED_SKILLS_ROOT}${skill.id}/${filePath}`
 			) {
-				continue;
+				return { skill, filePath };
 			}
-			return file.kind === 'binary'
-				? wrapBase64ForReading(file.content)
-				: new TextDecoder().decode(decodeBase64(file.content));
 		}
 	}
-	return undefined;
+	if (!allowRelative) return undefined;
+	// Skill authors link resources relative to the skill directory (Agent
+	// Skills spec), and models copy those links instead of the advertised
+	// path. Accept a relative path — or a unique suffix of a packaged path —
+	// but only when exactly one file matches, so the call stays unambiguous.
+	const relative = path.replace(/^\/+/, '');
+	if (relative.length === 0) return undefined;
+	const matches: PackagedSkillFileMatch[] = [];
+	for (const skill of Object.values(skills)) {
+		for (const filePath of Object.keys(skill.files)) {
+			if (filePath === relative || filePath.endsWith(`/${relative}`)) {
+				matches.push({ skill, filePath });
+			}
+		}
+	}
+	return matches.length === 1 ? matches[0] : undefined;
+}
+
+/** The resource files that `buildPackagedSkillPrompt` advertises. The not-found error uses the same list. */
+export function listPackagedSkillResources(directory: PackagedSkillDirectory): string[] {
+	return Object.keys(directory.files)
+		.filter((filePath) => filePath !== 'SKILL.md')
+		.sort();
+}
+
+function describePackagedSkillResourcePaths(
+	skills: Record<string, PackagedSkillDirectory>,
+	path: string,
+): string {
+	const segment = path.startsWith(PACKAGED_SKILLS_ROOT)
+		? (path.slice(PACKAGED_SKILLS_ROOT.length).split('/', 1)[0] ?? '')
+		: '';
+	const skillId = decodeSkillSegment(segment);
+	const name = packagedSkillIdName(skillId);
+	const paths =
+		name === undefined
+			? []
+			: Object.values(skills)
+					.filter((skill) => packagedSkillIdName(skill.id) === name)
+					.flatMap((skill) =>
+						listPackagedSkillResources(skill).map((filePath) =>
+							formatPackagedSkillFilePath(skill.id, filePath),
+						),
+					);
+	if (paths.length > 0) return `. Resource paths of skill "${name}": ${paths.join(', ')}`;
+	// A relative path with several candidates: name every file it could mean.
+	const relative = path.replace(/^\/+/, '');
+	const candidates = new Set<string>();
+	if (relative.length > 0) {
+		for (const skill of Object.values(skills)) {
+			for (const filePath of listPackagedSkillResources(skill)) {
+				if (filePath === relative || filePath.endsWith(`/${relative}`)) {
+					candidates.add(formatPackagedSkillFilePath(skill.id, filePath));
+				}
+			}
+		}
+	}
+	return candidates.size > 0
+		? `. Resource paths matching "${path}": ${[...candidates].join(', ')}`
+		: ". Use a path from the skill's resource list.";
+}
+
+function decodeSkillSegment(segment: string): string {
+	try {
+		return decodeURIComponent(segment);
+	} catch {
+		return segment;
+	}
+}
+
+/** `skill:<name>:<hash>` → `<name>`. */
+function packagedSkillIdName(skillId: string): string | undefined {
+	const start = skillId.indexOf('skill:') + 'skill:'.length;
+	const end = skillId.lastIndexOf(':');
+	return start < 'skill:'.length || end <= start ? undefined : skillId.slice(start, end);
 }
 
 function wrapBase64ForReading(content: string): string {
