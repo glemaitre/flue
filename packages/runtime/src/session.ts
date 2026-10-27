@@ -4261,6 +4261,8 @@ export class Session implements FlueSession, AgentSubmissionSession {
 			...getRegisteredPackagedSkills(this.liveSkills),
 			...activePackagedSkills,
 		};
+		// An advertised virtual path may name any mounted package. Skill-root
+		// relative paths are scoped to the package explicitly running this call.
 		// Skill activation resolves against the LIVE skill set (dynamic skills
 		// included); the tool's schema is a stable string so a skill flip never
 		// rewrites the tool spec. Presence still keys on having any skill at
@@ -4272,7 +4274,7 @@ export class Session implements FlueSession, AgentSubmissionSession {
 		const packagedRead = Object.values(packagedSkills).some((skill) =>
 			Object.keys(skill.files).some((path) => path !== 'SKILL.md'),
 		)
-			? createPackagedSkillReadTool(packagedSkills)
+			? createPackagedSkillReadTool(packagedSkills, activePackagedSkills)
 			: undefined;
 		// The task tool is ALWAYS in the set and its spec is fully static —
 		// both presence flips and description edits would rewrite the

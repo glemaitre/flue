@@ -75,7 +75,8 @@ const ReadParams = Type.Object({
 });
 
 export function createPackagedSkillReadTool(
-	packagedSkills: Record<string, PackagedSkillDirectory>,
+	advertisedSkills: Record<string, PackagedSkillDirectory>,
+	relativeSkills: Record<string, PackagedSkillDirectory> = {},
 ): AgentTool<typeof ReadParams> {
 	return {
 		name: READ_SKILL_RESOURCE_TOOL_NAME,
@@ -88,10 +89,12 @@ export function createPackagedSkillReadTool(
 			const path = params.path.startsWith(PACKAGED_SKILLS_ROOT.slice(1))
 				? `/${params.path}`
 				: params.path;
-			const content = readPackagedSkillFile(packagedSkills, path, true);
+			const content =
+				readPackagedSkillFile(advertisedSkills, path) ??
+				readPackagedSkillFile(relativeSkills, path, true);
 			if (content === undefined)
 				throw new Error(
-					`[flue] Packaged skill file not found: ${params.path}${describePackagedSkillResourcePaths(packagedSkills, path)}`,
+					`[flue] Packaged skill file not found: ${params.path}${describeRelativeSkillResourcePaths(relativeSkills, path)}`,
 				);
 			return formatReadContent(path, content, params.offset, params.limit);
 		},
@@ -707,7 +710,8 @@ function packagedSkillIdName(skillId: string): string | undefined {
 	return start < 'skill:'.length || end <= start ? undefined : skillId.slice(start, end);
 }
 
-function describePackagedSkillResourcePaths(
+/** List only resources that are in the caller-authorized relative-path scope. */
+function describeRelativeSkillResourcePaths(
 	skills: Record<string, PackagedSkillDirectory>,
 	path: string,
 ): string {
